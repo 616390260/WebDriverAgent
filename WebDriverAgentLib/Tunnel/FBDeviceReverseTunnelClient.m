@@ -104,7 +104,11 @@
 {
   NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:nil];
   if (data == nil) { return; }
-  NSURLSessionWebSocketMessage *message = [[NSURLSessionWebSocketMessage alloc] initWithData:data];
+  // ⚠️ 必须发 TEXT frame：后端只处理文本 JSON，binary frame 会被忽略
+  //（register 收不到 → tunnelOnline 一直 false）。所以这里 NSData→NSString→initWithString。
+  NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  if (json.length == 0) { return; }
+  NSURLSessionWebSocketMessage *message = [[NSURLSessionWebSocketMessage alloc] initWithString:json];
   [self.ws sendMessage:message completionHandler:^(NSError * _Nullable error) {
     // Ignore send errors; a broken connection surfaces via receive's error and drives reconnect.
   }];
@@ -224,7 +228,15 @@
     __strong typeof(weakSelf) strongSelf = weakSelf;
     if (strongSelf == nil) { return; }
     if (ep != strongSelf.epoch) { return; }
+    // 1) protocol-level ping：保活底层 WebSocket 连接。
     [strongSelf.ws sendPingWithPongReceiveHandler:^(NSError * _Nullable error) { }];
+    // 2) 业务层文本心跳：后端业务层可能收不到 protocol ping，必须额外发 text JSON heartbeat
+    //    （后端若约定心跳 type 是别的字符串，按后端改，但必须是 text frame）。
+    [strongSelf sendJSON:@{
+      @"type": @"heartbeat",
+      @"udid": strongSelf.udid,
+      @"tenantId": strongSelf.tenant,
+    }];
     [strongSelf pingForEpoch:ep];
   });
 }
